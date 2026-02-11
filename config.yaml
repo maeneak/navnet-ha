@@ -64,6 +64,13 @@ sensors:
   device_tracker:
     enabled: true
     name: "Vessel"
+
+# AIS Vessel Tracking
+ais:
+  # Remove vessels not heard from in this many seconds (default: 600 = 10 min)
+  vessel_timeout: 600
+  # How often to run stale vessel cleanup (seconds)
+  cleanup_interval: 60
     
 # Home Assistant Device Info (for MQTT Discovery)
 device:

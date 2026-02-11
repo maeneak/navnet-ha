@@ -143,6 +143,7 @@ class MQTTPublisher:
         self._connected = False
         self._discovery_sent = False
         self._last_values: dict[str, Any] = {}
+        self._ais_discovered_mmsis: set[int] = set()
 
     def connect(self):
         """Connect to MQTT broker."""
@@ -276,9 +277,27 @@ class MQTTPublisher:
             ais_discovery_topic, json.dumps(ais_payload), retain=True
         )
 
+        # AIS vessel count sensor
+        ais_count_topic = (
+            f"{self.discovery_prefix}/sensor/navnet_ais_vessel_count/config"
+        )
+        ais_count_payload = {
+            "name": "AIS Vessels Tracked",
+            "unique_id": "navnet_ais_vessel_count",
+            "state_topic": f"{self.topic_prefix}/ais/vessel_count",
+            "availability_topic": availability_topic,
+            "device": device,
+            "icon": "mdi:ferry",
+            "unit_of_measurement": "vessels",
+            "state_class": "measurement",
+        }
+        self.client.publish(
+            ais_count_topic, json.dumps(ais_count_payload), retain=True
+        )
+
         self._discovery_sent = True
         logger.info(
-            "HA MQTT Discovery sent for %d sensors + device tracker",
+            "HA MQTT Discovery sent for %d sensors + device tracker + AIS",
             len(SENSOR_DEFINITIONS),
         )
 
@@ -340,6 +359,143 @@ class MQTTPublisher:
         # Also publish to a stream topic for consumers that want all messages
         stream_topic = f"{self.topic_prefix}/ais/stream"
         self.client.publish(stream_topic, raw_message, retain=False)
+
+    def publish_ais_vessel(self, vessel, is_new: bool):
+        """Publish AIS vessel data with per-vessel HA discovery.
+
+        Creates a device_tracker and attribute sensors for each vessel
+        on first appearance.
+
+        Args:
+            vessel: AISVessel dataclass instance.
+            is_new: Whether this is a newly discovered vessel.
+        """
+        if not self._connected:
+            return
+
+        mmsi = vessel.mmsi
+
+        # Send HA discovery for new vessels
+        if mmsi not in self._ais_discovered_mmsis:
+            self._send_ais_vessel_discovery(vessel)
+            self._ais_discovered_mmsis.add(mmsi)
+
+        # Publish device tracker state + attributes
+        vessel_name = vessel.name or f"MMSI {mmsi}"
+        state_topic = f"{self.topic_prefix}/ais/vessels/{mmsi}/state"
+        attrs_topic = f"{self.topic_prefix}/ais/vessels/{mmsi}/attributes"
+
+        self.client.publish(state_topic, "not_home", retain=True)
+
+        attributes = {
+            "latitude": vessel.latitude,
+            "longitude": vessel.longitude,
+            "source_type": "gps",
+            "gps_accuracy": 50,
+            "friendly_name": vessel_name,
+        }
+
+        if vessel.speed is not None:
+            attributes["speed"] = vessel.speed
+        if vessel.course is not None:
+            attributes["heading"] = vessel.course
+        if vessel.heading is not None:
+            attributes["true_heading"] = vessel.heading
+        if vessel.callsign:
+            attributes["callsign"] = vessel.callsign
+        if vessel.ship_type:
+            attributes["ship_type"] = vessel.ship_type
+        if vessel.destination:
+            attributes["destination"] = vessel.destination
+        if vessel.status:
+            attributes["nav_status"] = vessel.status
+        if vessel.length is not None:
+            attributes["length"] = vessel.length
+        if vessel.beam is not None:
+            attributes["beam"] = vessel.beam
+        if vessel.draught is not None:
+            attributes["draught"] = vessel.draught
+        attributes["mmsi"] = mmsi
+        attributes["message_count"] = vessel.message_count
+
+        self.client.publish(attrs_topic, json.dumps(attributes), retain=True)
+
+    def _send_ais_vessel_discovery(self, vessel):
+        """Send HA MQTT Discovery config for an AIS vessel.
+
+        Args:
+            vessel: AISVessel dataclass instance.
+        """
+        mmsi = vessel.mmsi
+        vessel_name = vessel.name or f"MMSI {mmsi}"
+        availability_topic = f"{self.topic_prefix}/bridge/status"
+
+        # AIS vessel device - separate from the bridge device
+        ais_device = {
+            "identifiers": [f"ais_vessel_{mmsi}"],
+            "name": vessel_name,
+            "manufacturer": "AIS",
+            "model": vessel.ship_type or "Vessel",
+            "via_device": self.device_config.get("identifiers", "navnet_nmea_bridge"),
+        }
+
+        object_id = f"ais_{mmsi}"
+
+        # Device tracker for vessel position on map
+        dt_disc_topic = (
+            f"{self.discovery_prefix}/device_tracker/{object_id}/config"
+        )
+        dt_payload = {
+            "name": "Position",
+            "unique_id": f"ais_{mmsi}_tracker",
+            "state_topic": f"{self.topic_prefix}/ais/vessels/{mmsi}/state",
+            "json_attributes_topic": f"{self.topic_prefix}/ais/vessels/{mmsi}/attributes",
+            "availability_topic": availability_topic,
+            "device": ais_device,
+            "icon": "mdi:ferry",
+            "source_type": "gps",
+            "payload_home": "home",
+            "payload_not_home": "not_home",
+        }
+        self.client.publish(dt_disc_topic, json.dumps(dt_payload), retain=True)
+
+        logger.info(
+            "AIS discovery sent for vessel %s (MMSI %d, %s)",
+            vessel_name, mmsi, vessel.ship_type,
+        )
+
+    def publish_ais_vessel_count(self, count: int):
+        """Publish the number of tracked AIS vessels.
+
+        Args:
+            count: Number of currently tracked vessels.
+        """
+        if not self._connected:
+            return
+
+        topic = f"{self.topic_prefix}/ais/vessel_count"
+        self.client.publish(topic, str(count), retain=True)
+
+    def remove_ais_vessel(self, mmsi: int):
+        """Remove HA discovery for a stale AIS vessel.
+
+        Args:
+            mmsi: MMSI of the vessel to remove.
+        """
+        if not self._connected:
+            return
+
+        if mmsi in self._ais_discovered_mmsis:
+            self._ais_discovered_mmsis.discard(mmsi)
+
+            # Send empty payload to remove discovery
+            object_id = f"ais_{mmsi}"
+            dt_disc_topic = (
+                f"{self.discovery_prefix}/device_tracker/{object_id}/config"
+            )
+            self.client.publish(dt_disc_topic, "", retain=True)
+
+            logger.info("AIS discovery removed for MMSI %d", mmsi)
 
     def disconnect(self):
         """Disconnect from MQTT broker."""

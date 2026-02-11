@@ -371,11 +371,8 @@ def _parse_mtw(parts: list) -> Optional[NMEAData]:
     if temp is not None:
         unit = parts[2].strip()
         if unit == "C":
-            # Sanity check: if temp > 50C, likely Fahrenheit mislabeled
+            # Navnet reports Fahrenheit mislabeled as Celsius (e.g. 076.25,C)
             if temp > 50:
-                logger.warning(
-                    "Water temp %.1f°C exceeds 50°C, treating as Fahrenheit", temp
-                )
                 temp = round((temp - 32) * 5 / 9, 1)
             data.water_temperature_c = temp
         elif unit == "F":

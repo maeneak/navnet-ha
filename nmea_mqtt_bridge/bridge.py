@@ -5,6 +5,7 @@ import logging
 import time
 from typing import Any, Optional
 
+from .ais_decoder import AISDecoder
 from .mqtt_publisher import MQTTPublisher, SENSOR_DEFINITIONS
 from .nmea_parser import NMEAData, parse_sentence
 from .udp_listener import UDPListener
@@ -51,6 +52,15 @@ class NMEABridge:
         self._device_tracker_enabled = (
             config.get("sensors", {}).get("device_tracker", {}).get("enabled", True)
         )
+
+        # AIS decoder
+        ais_config = config.get("ais", {})
+        self.ais_decoder = AISDecoder(
+            vessel_timeout=ais_config.get("vessel_timeout", 600),
+        )
+        self._ais_cleanup_interval = ais_config.get("cleanup_interval", 60)
+        self._last_ais_cleanup = 0.0
+        self._last_ais_vessel_count = -1
 
         # Current state - accumulated from multiple sentences
         self._state: dict[str, Any] = {}
@@ -99,7 +109,35 @@ class NMEABridge:
         # Handle AIS separately
         if data.sentence_type == "AIS" and data.ais_messages:
             for msg in data.ais_messages:
+                # Publish raw message
                 self.mqtt_publisher.publish_ais(msg)
+
+                # Decode and track vessel
+                result = self.ais_decoder.decode_message(msg)
+                if result is not None:
+                    vessel, is_new = result
+                    if vessel.latitude is not None and vessel.longitude is not None:
+                        self.mqtt_publisher.publish_ais_vessel(vessel, is_new)
+
+                    # Update vessel count if changed
+                    count = self.ais_decoder.vessel_count
+                    if count != self._last_ais_vessel_count:
+                        self.mqtt_publisher.publish_ais_vessel_count(count)
+                        self._last_ais_vessel_count = count
+
+            # Periodic cleanup of stale vessels
+            now = time.monotonic()
+            if now - self._last_ais_cleanup > self._ais_cleanup_interval:
+                self._last_ais_cleanup = now
+                stale = self.ais_decoder.cleanup_stale_vessels()
+                for mmsi in stale:
+                    self.mqtt_publisher.remove_ais_vessel(mmsi)
+                    logger.info("Removed stale AIS vessel MMSI %d", mmsi)
+                if stale:
+                    self.mqtt_publisher.publish_ais_vessel_count(
+                        self.ais_decoder.vessel_count
+                    )
+
             self._stats["sentences_published"] += 1
             return
 
@@ -150,11 +188,12 @@ class NMEABridge:
         while True:
             await asyncio.sleep(self._stats_interval)
             logger.info(
-                "Bridge stats: received=%d parsed=%d published=%d errors=%d",
+                "Bridge stats: received=%d parsed=%d published=%d errors=%d ais_vessels=%d",
                 self._stats["sentences_received"],
                 self._stats["sentences_parsed"],
                 self._stats["sentences_published"],
                 self._stats["errors"],
+                self.ais_decoder.vessel_count,
             )
 
     async def run(self):

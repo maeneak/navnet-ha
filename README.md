@@ -39,6 +39,8 @@ Lightweight bridge that listens for Furuno Navnet NMEA 0183 data over UDP and pu
 | GPS Fix Quality | | GGA |
 | Vessel Position | device_tracker | GGA |
 | AIS Last Message | raw | AIVDM |
+| AIS Vessels Tracked | count | AIVDM |
+| AIS Vessel (per vessel) | device_tracker | AIVDM/AIVDO |
 
 ## Quick Start
 
@@ -83,7 +85,7 @@ You should see:
 ```
 Connecting to MQTT broker at homeassistant.local:1883
 Connected to MQTT broker
-HA MQTT Discovery sent for 16 sensors + device tracker
+HA MQTT Discovery sent for 16 sensors + device tracker + AIS
 Listening on 0.0.0.0:10021 [primary_nav] - Primary GPS/Navigation & Depth
 Listening on 0.0.0.0:10036 [heading_fast] - High-rate heading data (10Hz)
 Listening on 0.0.0.0:31000 [integrated] - Integrated instrument feed
@@ -182,6 +184,49 @@ navnet/device_tracker/state       → not_home
 navnet/device_tracker/attributes  → {"latitude": ..., "longitude": ..., "heading": ...}
 navnet/ais/last_message           → <raw NMEA AIS sentence>
 navnet/ais/stream                 → (all AIS messages, not retained)
+navnet/ais/vessel_count           → <number of tracked vessels>
+navnet/ais/vessels/{mmsi}/state      → not_home
+navnet/ais/vessels/{mmsi}/attributes → {"latitude": ..., "speed": ..., "ship_type": ...}
+```
+
+## AIS Vessel Tracking
+
+The bridge fully decodes AIS messages using the [pyais](https://github.com/M0r13n/pyais) library. Each vessel detected via AIS is automatically created as a separate device in Home Assistant with its own device tracker.
+
+### How It Works
+
+1. **AIS messages** (AIVDM/AIVDO) received on port 10033 are decoded
+2. **Position reports** (msg types 1-3, 18, 19) update vessel lat/lon, speed, course, heading, and nav status
+3. **Static/voyage data** (msg types 5, 24) update vessel name, callsign, ship type, destination, dimensions, and draught
+4. **Multipart messages** (e.g., type 5 requires 2 fragments) are buffered and reassembled automatically
+5. Each vessel appears as a **separate HA device** (`AIS > Vessel Name`) with a device tracker on the map
+6. Stale vessels are automatically removed after the timeout (default: 10 minutes)
+
+### Per-Vessel Attributes
+
+Each AIS vessel device tracker includes these attributes:
+
+| Attribute | Description |
+|-----------|-------------|
+| `mmsi` | Maritime Mobile Service Identity |
+| `speed` | Speed over ground (knots) |
+| `heading` | Course over ground (degrees) |
+| `true_heading` | True heading from gyro (degrees) |
+| `callsign` | Radio callsign |
+| `ship_type` | Vessel type (Cargo, Tanker, Sailing, etc.) |
+| `destination` | Reported destination |
+| `nav_status` | Navigation status (Under way, Anchored, etc.) |
+| `length` | Vessel length (meters) |
+| `beam` | Vessel beam/width (meters) |
+| `draught` | Vessel draught (meters) |
+| `message_count` | Number of AIS messages received |
+
+### AIS Configuration
+
+```yaml
+ais:
+  vessel_timeout: 600     # Remove vessels not heard for 10 min
+  cleanup_interval: 60    # Run cleanup every 60 seconds
 ```
 
 ## License
