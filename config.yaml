@@ -3,10 +3,10 @@
 
 # MQTT Broker Settings
 mqtt:
-  host: "homeassistant.local"        # MQTT broker hostname/IP
+  host: "localhost"        # MQTT broker hostname/IP
   port: 1883                          # MQTT broker port
-  username: ""                        # MQTT username (leave empty if none)
-  password: ""                        # MQTT password (leave empty if none)
+  username: "ha_user"                        # MQTT username (leave empty if none)
+  password: "Abcd1234"                        # MQTT password (leave empty if none)
   client_id: "navnet-nmea-bridge"
   keepalive: 60
   # Topic prefix for all NMEA data
