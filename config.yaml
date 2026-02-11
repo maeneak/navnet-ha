@@ -1,0 +1,78 @@
+# Navnet NMEA-to-MQTT Bridge Configuration
+# -----------------------------------------
+
+# MQTT Broker Settings
+mqtt:
+  host: "homeassistant.local"        # MQTT broker hostname/IP
+  port: 1883                          # MQTT broker port
+  username: ""                        # MQTT username (leave empty if none)
+  password: ""                        # MQTT password (leave empty if none)
+  client_id: "navnet-nmea-bridge"
+  keepalive: 60
+  # Topic prefix for all NMEA data
+  topic_prefix: "navnet"
+  # HA MQTT Discovery prefix (default: homeassistant)
+  discovery_prefix: "homeassistant"
+
+# UDP Listener Settings
+udp:
+  # Bind address - 0.0.0.0 to listen on all interfaces
+  bind_address: "0.0.0.0"
+  
+  # NMEA data sources to listen on
+  sources:
+    - name: "primary_nav"
+      port: 10021
+      description: "Primary GPS/Navigation & Depth"
+      enabled: true
+      
+    - name: "heading_fast"
+      port: 10036
+      description: "High-rate heading data (10Hz)"
+      enabled: true
+      
+    - name: "integrated"
+      port: 31000
+      description: "Integrated instrument feed"
+      enabled: true
+      
+    - name: "ais"
+      port: 10033
+      description: "AIS vessel traffic"
+      enabled: true
+      
+    - name: "mirrored"
+      port: 10042
+      description: "Mirrored navigation (192.168.252.x)"
+      enabled: false
+
+# Sensor Configuration
+sensors:
+  # Update rate throttling (seconds) - prevents flooding HA
+  # Heading data arrives at 10Hz but HA doesn't need that rate
+  throttle:
+    position: 5          # GPS position update interval
+    heading: 2           # Heading update interval  
+    speed: 5             # Speed update interval
+    depth: 5             # Depth update interval
+    environment: 30      # Water temp, etc.
+    satellites: 30       # Satellite info
+    rudder: 2            # Rudder angle
+    ais: 10              # AIS target updates
+    
+  # Device tracker for vessel position on HA map
+  device_tracker:
+    enabled: true
+    name: "Vessel"
+    
+# Home Assistant Device Info (for MQTT Discovery)
+device:
+  name: "Navnet"
+  manufacturer: "Furuno"
+  model: "NavNet"
+  identifiers: "navnet_nmea_bridge"
+
+# Logging
+logging:
+  level: "INFO"          # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"

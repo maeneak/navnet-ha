@@ -310,55 +310,46 @@ These appear to be duplicate/mirrored streams of the primary 172.31.x.x network 
 
 ---
 
-## Recommended Integration Strategy
+## Integration Strategy: NMEA-to-MQTT Bridge
 
-### For Home Assistant
+Home Assistant does not natively support UDP NMEA ingestion. The solution is a lightweight
+Python bridge that listens for NMEA UDP broadcasts and publishes to MQTT with HA auto-discovery.
 
-**Option 1: Single Integrated Feed (Simplest)**
-```yaml
-sensor:
-  - platform: nmea
-    name: navnet
-    host: 0.0.0.0
-    port: 31000  # Integrated feed from 172.31.3.150
+**Repository:** [maeneak/navnet-ha](https://github.com/maeneak/navnet-ha)
+
+### Architecture
+
+```
+┌──────────────┐     UDP       ┌──────────────┐     MQTT      ┌──────────────┐
+│  Navnet      │──────────────▶│  NMEA-MQTT   │──────────────▶│  Home        │
+│  Electronics │  Broadcast    │  Bridge      │  Discovery    │  Assistant   │
+└──────────────┘               └──────────────┘               └──────────────┘
+                                (Synology NAS)
 ```
 
-**Option 2: Multi-Source (Most Complete)**
-```yaml
-sensor:
-  - platform: nmea
-    name: navnet_gps
-    host: 0.0.0.0
-    port: 10021
-    sources:
-      - ip: 172.31.252.1
-    
-  - platform: nmea
-    name: navnet_depth
-    host: 0.0.0.0
-    port: 10021
-    sources:
-      - ip: 172.31.92.1
-      
-  - platform: nmea
-    name: navnet_ais
-    host: 0.0.0.0
-    port: 10033
-    
-  - platform: nmea
-    name: navnet_heading_fast
-    host: 0.0.0.0
-    port: 10036
+### Deployment
+
+Run on the Synology NAS (already on the network via eth4) using Docker:
+
+```bash
+docker compose up -d
 ```
 
-**Option 3: Cross-Network (If HA on different VLAN)**
-```yaml
-sensor:
-  - platform: nmea
-    name: navnet
-    host: 0.0.0.0
-    port: 10042  # Mirror on 192.168.252.100
-```
+### Sensors Auto-Created in HA
+
+| Entity | Sensor ID | Source |
+|--------|-----------|--------|
+| Latitude | `sensor.navnet_latitude` | GGA |
+| Longitude | `sensor.navnet_longitude` | GGA |
+| Heading (True) | `sensor.navnet_heading_true` | HDT |
+| Heading (Magnetic) | `sensor.navnet_heading_magnetic` | HDG |
+| Speed (SOG) | `sensor.navnet_speed_knots` | VTG |
+| Depth | `sensor.navnet_depth` | DPT |
+| Water Temperature | `sensor.navnet_water_temperature` | MTW |
+| Rudder Angle | `sensor.navnet_rudder_angle` | RSA |
+| Vessel Position | `device_tracker.navnet_vessel_tracker` | GGA |
+
+See [README.md](README.md) for full setup instructions.
 
 ---
 
@@ -454,16 +445,17 @@ nc -ul 31000
 
 ## Integration Checklist
 
-- [ ] Verify network connectivity to 172.31.0.0/16 or 192.168.252.0/24
-- [ ] Test UDP port access (firewall rules)
-- [ ] Configure Home Assistant NMEA sensor
-- [ ] Create entity sensors for desired values
-- [ ] Test position accuracy
-- [ ] Verify heading and speed data
+- [ ] Verify network connectivity to 172.31.0.0/16 from Synology NAS
+- [ ] Confirm MQTT broker running (Mosquitto add-on in HA)
+- [ ] Configure HA MQTT integration
+- [ ] Edit `config.yaml` with MQTT broker credentials
+- [ ] Deploy bridge: `docker compose up -d`
+- [ ] Verify sensors appear in HA under MQTT → Navnet device
+- [ ] Confirm vessel position on HA map
+- [ ] Test depth and speed data accuracy
 - [ ] Configure depth alarms (if required)
 - [ ] Set up AIS target tracking (if required)
-- [ ] Create automation triggers
-- [ ] Document entity IDs for dashboards
+- [ ] Create automations and dashboards
 
 ---
 
