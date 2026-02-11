@@ -95,26 +95,6 @@ Bridge is running.
 
 Go to **Settings → Devices & Services → MQTT**. You should see a new **Navnet** device with all sensors.
 
-## Running on Synology NAS
-
-Since the Synology NAS is already connected to the vessel network on eth4:
-
-### Via Docker (Container Manager)
-
-1. SSH into the NAS
-2. Clone this repo or copy the files
-3. Run `docker compose up -d`
-
-### Via Task Scheduler (without Docker)
-
-1. Install Python 3 via Synology Package Center
-2. Copy files to a share (e.g., `/volume1/navnet-ha/`)
-3. Install deps: `pip3 install -r requirements.txt`
-4. Create a scheduled task:
-   ```bash
-   cd /volume1/navnet-ha && python3 -m nmea_mqtt_bridge
-   ```
-
 ## Running Standalone (without Docker)
 
 ```bash
@@ -172,18 +152,20 @@ sensors:
 
 ## Network Architecture
 
-This bridge expects to receive UDP broadcast NMEA data from:
+The bridge listens for UDP broadcast NMEA 0183 data. Configure the ports in `config.yaml` to match your Navnet network. Typical data sources include:
 
-| Source | Port | Data |
-|--------|------|------|
-| 172.31.252.1 | 10021 | GPS, heading, satellites, rudder |
-| 172.31.252.1 | 10036 | High-rate heading (10Hz) |
-| 172.31.92.1 | 10021 | Depth, water temp, water speed |
-| 172.31.24.3 | 10033 | AIS vessel traffic |
-| 172.31.3.150 | 31000 | Integrated feed (all data) |
-| 172.31.3.233 | 10034 | ARPA radar |
+| Data | Source Sentence | Notes |
+|------|----------------|-------|
+| GPS position, satellites, altitude | GGA | Primary navigation fix |
+| Heading (10Hz) | HDT, HDG | True and magnetic heading |
+| Speed and course | VTG | Speed/course over ground |
+| Depth | DPT | Water depth |
+| Water temperature | MTW | Sea temperature |
+| Water speed | VHW | Speed through water |
+| AIS traffic | AIVDM/AIVDO | Vessel traffic |
+| Rudder angle | RSA | Rudder sensor |
 
-See [nmea-protocol-spec.md](nmea-protocol-spec.md) for the full protocol specification.
+The host running this bridge must be on the same network as the Navnet electronics to receive UDP broadcasts. The Docker container uses `network_mode: host` for this reason.
 
 ## MQTT Topics
 
@@ -191,14 +173,14 @@ All topics are prefixed with `navnet/` (configurable):
 
 ```
 navnet/bridge/status              → online/offline
-navnet/sensor/latitude/state      → -16.587456
-navnet/sensor/longitude/state     → 145.919608
-navnet/sensor/heading_true/state  → 18.2
-navnet/sensor/depth/state         → 36.34
-navnet/sensor/speed_knots/state   → 23.6
+navnet/sensor/latitude/state      → <decimal degrees>
+navnet/sensor/longitude/state     → <decimal degrees>
+navnet/sensor/heading_true/state  → <degrees>
+navnet/sensor/depth/state         → <meters>
+navnet/sensor/speed_knots/state   → <knots>
 navnet/device_tracker/state       → not_home
 navnet/device_tracker/attributes  → {"latitude": ..., "longitude": ..., "heading": ...}
-navnet/ais/last_message           → !AIVDM,1,1,,A,...
+navnet/ais/last_message           → <raw NMEA AIS sentence>
 navnet/ais/stream                 → (all AIS messages, not retained)
 ```
 
