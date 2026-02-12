@@ -1,9 +1,15 @@
-"""NMEA 0183 sentence parser for marine instrument data."""
+"""NMEA 0183 sentence parser for marine instrument data.
+
+Uses pynmea2 for parsing and checksum validation of standard NMEA sentences.
+AIS sentences are validated manually and stored raw for pyais decoding.
+Parsed data is normalized into NMEAData domain objects for the bridge.
+"""
 
 import logging
-import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
+
+import pynmea2
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +63,8 @@ class NMEAData:
 def validate_checksum(sentence: str) -> bool:
     """Validate NMEA 0183 checksum.
 
-    Checksum is XOR of all characters between $ (or !) and *.
+    Used for AIS sentences (starting with !) which pynmea2 doesn't handle.
+    For standard $ sentences, pynmea2.parse() validates checksums internally.
     """
     try:
         if "*" not in sentence:
@@ -82,46 +89,29 @@ def validate_checksum(sentence: str) -> bool:
         return False
 
 
-def _parse_coordinate(value: str, direction: str) -> Optional[float]:
-    """Parse NMEA coordinate (DDMM.MMMM or DDDMM.MMMM) to decimal degrees."""
-    if not value or not direction:
-        return None
-    try:
-        # Determine degrees width (2 for lat, 3 for lon)
-        if direction in ("N", "S"):
-            deg_width = 2
-        else:
-            deg_width = 3
+def _safe_float(value: Any) -> Optional[float]:
+    """Safely convert a value to float.
 
-        degrees = int(value[:deg_width])
-        minutes = float(value[deg_width:])
-        decimal = degrees + minutes / 60.0
-
-        if direction in ("S", "W"):
-            decimal = -decimal
-
-        return round(decimal, 6)
-    except (ValueError, IndexError):
-        return None
-
-
-def _safe_float(value: str) -> Optional[float]:
-    """Safely convert string to float."""
-    if not value or value.strip() == "":
+    Handles strings, Decimal, numeric types, empty strings, and None.
+    """
+    if value is None or value == "":
         return None
     try:
         return float(value)
-    except ValueError:
+    except (ValueError, TypeError):
         return None
 
 
-def _safe_int(value: str) -> Optional[int]:
-    """Safely convert string to int."""
-    if not value or value.strip() == "":
+def _safe_int(value: Any) -> Optional[int]:
+    """Safely convert a value to int.
+
+    Handles strings, numeric types, empty strings, and None.
+    """
+    if value is None or value == "":
         return None
     try:
         return int(value)
-    except ValueError:
+    except (ValueError, TypeError):
         return None
 
 
@@ -147,6 +137,9 @@ def _init_parsers():
 
 def parse_sentence(raw: str) -> Optional[NMEAData]:
     """Parse a single NMEA 0183 sentence.
+
+    Uses pynmea2 for parsing and checksum validation of standard sentences.
+    AIS sentences (starting with !) are validated and stored for pyais decoding.
 
     Supports:
         GGA - Position fix
@@ -174,26 +167,21 @@ def parse_sentence(raw: str) -> Optional[NMEAData]:
     if not raw.startswith("$"):
         return None
 
-    if not validate_checksum(raw):
-        logger.debug("Checksum failed: %s", raw)
+    try:
+        msg = pynmea2.parse(raw, check=True)
+    except pynmea2.ParseError:
+        logger.debug("Parse/checksum failed: %s", raw)
+        return None
+    except Exception as e:
+        logger.debug("Unexpected parse error: %s - %s", raw, e)
         return None
 
-    # Remove checksum for parsing
-    sentence = raw.split("*")[0]
-    parts = sentence.split(",")
-
-    if len(parts) < 2:
-        return None
-
-    # Extract sentence type (last 3 chars of talker+type field)
-    sentence_id = parts[0]
-    # Handle $GPGGA, $IIGGA, $SDGGA etc - get the sentence type
-    sentence_type = sentence_id[-3:] if len(sentence_id) >= 4 else sentence_id[1:]
+    sentence_type = msg.sentence_type
 
     parser = _PARSERS.get(sentence_type)
     if parser:
         try:
-            data = parser(parts)
+            data = parser(msg)
             if data:
                 data.sentence_type = sentence_type
             return data
@@ -204,178 +192,161 @@ def parse_sentence(raw: str) -> Optional[NMEAData]:
     return None
 
 
-def _parse_gga(parts: list) -> Optional[NMEAData]:
+def _parse_gga(msg) -> Optional[NMEAData]:
     """Parse GGA - Global Positioning System Fix Data.
 
     $GPGGA,232001.00,1635.2474,S,14555.1765,E,1,11,0.70,11.5,M,62.6,M,,*72
     """
-    if len(parts) < 15:
-        return None
-
     data = NMEAData()
-    data.utc_time = parts[1] if parts[1] else None
-    data.latitude = _parse_coordinate(parts[2], parts[3])
-    data.longitude = _parse_coordinate(parts[4], parts[5])
-    data.fix_quality = _safe_int(parts[6])
-    data.satellites_in_use = _safe_int(parts[7])
-    data.hdop = _safe_float(parts[8])
-    data.altitude = _safe_float(parts[9])
+
+    # Raw timestamp string (pynmea2 converts to datetime.time; keep raw)
+    data.utc_time = msg.data[0] if msg.data[0] else None
+
+    # pynmea2 .latitude/.longitude properties return signed decimal degrees
+    if msg.lat and msg.lat_dir:
+        try:
+            data.latitude = round(msg.latitude, 6)
+            data.longitude = round(msg.longitude, 6)
+        except (ValueError, AttributeError, TypeError):
+            pass
+
+    data.fix_quality = _safe_int(msg.gps_qual)
+    data.satellites_in_use = _safe_int(msg.num_sats)
+    data.hdop = _safe_float(msg.horizontal_dil)
+    data.altitude = _safe_float(msg.altitude)
 
     return data
 
 
-def _parse_vtg(parts: list) -> Optional[NMEAData]:
+def _parse_vtg(msg) -> Optional[NMEAData]:
     """Parse VTG - Track Made Good and Ground Speed.
 
     $GPVTG,17.6,T,10.8,M,23.6,N,43.7,K*40
     """
-    if len(parts) < 9:
-        return None
-
     data = NMEAData()
-    data.course_over_ground_true = _safe_float(parts[1])
-    data.course_over_ground_magnetic = _safe_float(parts[3])
-    data.speed_over_ground_knots = _safe_float(parts[5])
-    data.speed_over_ground_kmh = _safe_float(parts[7])
+    data.course_over_ground_true = _safe_float(msg.true_track)
+    data.course_over_ground_magnetic = _safe_float(msg.mag_track)
+    data.speed_over_ground_knots = _safe_float(msg.spd_over_grnd_kts)
+    data.speed_over_ground_kmh = _safe_float(msg.spd_over_grnd_kmph)
 
     return data
 
 
-def _parse_hdt(parts: list) -> Optional[NMEAData]:
+def _parse_hdt(msg) -> Optional[NMEAData]:
     """Parse HDT - True Heading.
 
     $GPHDT,18.2,T*0E
     """
-    if len(parts) < 3:
-        return None
-
     data = NMEAData()
-    data.heading_true = _safe_float(parts[1])
+    data.heading_true = _safe_float(msg.heading)
 
     return data
 
 
-def _parse_hdg(parts: list) -> Optional[NMEAData]:
+def _parse_hdg(msg) -> Optional[NMEAData]:
     """Parse HDG - Magnetic Heading, Deviation, Variation.
 
     $GPHDG,11.4,,,6.8,E*0F
     """
-    if len(parts) < 6:
-        return None
-
     data = NMEAData()
-    data.heading_magnetic = _safe_float(parts[1])
+    data.heading_magnetic = _safe_float(msg.heading)
 
-    variation = _safe_float(parts[4])
-    if variation is not None and len(parts) > 5:
-        direction = parts[5].strip()
-        if direction == "W":
+    variation = _safe_float(msg.variation)
+    if variation is not None:
+        if msg.var_dir == "W":
             variation = -variation
         data.magnetic_variation = variation
 
     return data
 
 
-def _parse_zda(parts: list) -> Optional[NMEAData]:
+def _parse_zda(msg) -> Optional[NMEAData]:
     """Parse ZDA - UTC Date and Time.
 
     $GPZDA,232001.00,10,02,2026,-10,00*4D
     """
-    if len(parts) < 5:
-        return None
-
     data = NMEAData()
-    data.utc_time = parts[1] if parts[1] else None
 
-    day = parts[2]
-    month = parts[3]
-    year = parts[4]
-    if day and month and year:
-        data.utc_date = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+    # Raw timestamp string
+    data.utc_time = msg.data[0] if msg.data[0] else None
+
+    # pynmea2 returns int (or None if empty) for day/month/year
+    day = msg.day
+    month = msg.month
+    year = msg.year
+
+    if day is not None and month is not None and year is not None:
+        data.utc_date = f"{year}-{str(month).zfill(2)}-{str(day).zfill(2)}"
 
     return data
 
 
-def _parse_rsa(parts: list) -> Optional[NMEAData]:
+def _parse_rsa(msg) -> Optional[NMEAData]:
     """Parse RSA - Rudder Sensor Angle.
 
     $GPRSA,0.6,A,,*3E
     """
-    if len(parts) < 3:
-        return None
-
     data = NMEAData()
-    if len(parts) > 2 and parts[2] == "A":
-        data.rudder_angle = _safe_float(parts[1])
+
+    if msg.rsa_starboard_status == "A":
+        data.rudder_angle = _safe_float(msg.rsa_starboard)
 
     return data
 
 
-def _parse_gsv(parts: list) -> Optional[NMEAData]:
+def _parse_gsv(msg) -> Optional[NMEAData]:
     """Parse GSV - Satellites in View.
 
     $GPGSV,3,1,11,08,09,220,38,...*73
     """
-    if len(parts) < 4:
-        return None
-
     data = NMEAData()
-    data.satellites_in_view = _safe_int(parts[3])
+    data.satellites_in_view = _safe_int(msg.num_sv_in_view)
 
     return data
 
 
-def _parse_dpt(parts: list) -> Optional[NMEAData]:
+def _parse_dpt(msg) -> Optional[NMEAData]:
     """Parse DPT - Depth of Water.
 
     $SDDPT,0036.34,000.00
     $IIDPT,36.03,-3.2,*46
     """
-    if len(parts) < 3:
-        return None
-
     data = NMEAData()
-    data.depth_meters = _safe_float(parts[1])
-    data.depth_offset = _safe_float(parts[2])
+    data.depth_meters = _safe_float(msg.depth)
+    data.depth_offset = _safe_float(msg.offset)
 
     return data
 
 
-def _parse_vhw(parts: list) -> Optional[NMEAData]:
+def _parse_vhw(msg) -> Optional[NMEAData]:
     """Parse VHW - Water Speed and Heading.
 
     $VWVHW,,T,,M,000.00,N,,K
     $IIVHW,18.2,T,11.4,M,0.0,N,0.0,K*5A
     """
-    if len(parts) < 9:
-        return None
-
     data = NMEAData()
-    data.heading_true = _safe_float(parts[1])
-    data.heading_magnetic = _safe_float(parts[3])
-    data.speed_through_water_knots = _safe_float(parts[5])
+    data.heading_true = _safe_float(msg.heading_true)
+    data.heading_magnetic = _safe_float(msg.heading_magnetic)
+    data.speed_through_water_knots = _safe_float(msg.water_speed_knots)
 
     return data
 
 
-def _parse_mtw(parts: list) -> Optional[NMEAData]:
+def _parse_mtw(msg) -> Optional[NMEAData]:
     """Parse MTW - Water Temperature.
 
     $YXMTW,076.25,C
     """
-    if len(parts) < 3:
-        return None
-
     data = NMEAData()
-    temp = _safe_float(parts[1])
+    temp = _safe_float(msg.temperature)
     if temp is not None:
-        unit = parts[2].strip()
-        if unit == "C":
+        units = msg.units or "C"
+        if units == "C":
             # Navnet reports Fahrenheit mislabeled as Celsius (e.g. 076.25,C)
             if temp > 50:
                 temp = round((temp - 32) * 5 / 9, 1)
             data.water_temperature_c = temp
-        elif unit == "F":
+        elif units == "F":
             data.water_temperature_c = round((temp - 32) * 5 / 9, 1)
 
     return data

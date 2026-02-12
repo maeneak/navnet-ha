@@ -6,7 +6,6 @@ from nmea_mqtt_bridge.nmea_parser import (
     NMEAData,
     parse_sentence,
     validate_checksum,
-    _parse_coordinate,
     _safe_float,
     _safe_int,
 )
@@ -43,40 +42,6 @@ class TestValidateChecksum:
 
     def test_empty_string(self):
         assert not validate_checksum("")
-
-
-# --- Coordinate parsing ---
-
-
-class TestParseCoordinate:
-    def test_south_latitude(self):
-        result = _parse_coordinate("1635.2474", "S")
-        assert result is not None
-        assert result == pytest.approx(-16.587457, abs=1e-5)
-
-    def test_east_longitude(self):
-        result = _parse_coordinate("14555.1765", "E")
-        assert result is not None
-        assert result == pytest.approx(145.919608, abs=1e-5)
-
-    def test_north_latitude(self):
-        result = _parse_coordinate("3345.1234", "N")
-        assert result is not None
-        assert result > 0
-
-    def test_west_longitude(self):
-        result = _parse_coordinate("07712.3456", "W")
-        assert result is not None
-        assert result < 0
-
-    def test_empty_value(self):
-        assert _parse_coordinate("", "N") is None
-
-    def test_empty_direction(self):
-        assert _parse_coordinate("1635.2474", "") is None
-
-    def test_invalid_value(self):
-        assert _parse_coordinate("notanumber", "N") is None
 
 
 # --- Safe conversion helpers ---
