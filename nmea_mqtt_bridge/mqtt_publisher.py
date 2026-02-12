@@ -261,22 +261,6 @@ class MQTTPublisher:
 
         self.client.publish(dt_discovery_topic, json.dumps(dt_payload), retain=True)
 
-        # AIS raw message sensor
-        ais_discovery_topic = (
-            f"{self.discovery_prefix}/sensor/navnet_ais_last_message/config"
-        )
-        ais_payload = {
-            "name": "AIS Last Message",
-            "unique_id": "navnet_ais_last_message",
-            "state_topic": f"{self.topic_prefix}/ais/last_message",
-            "availability_topic": availability_topic,
-            "device": device,
-            "icon": "mdi:ship-wheel",
-        }
-        self.client.publish(
-            ais_discovery_topic, json.dumps(ais_payload), retain=True
-        )
-
         # AIS vessel count sensor
         ais_count_topic = (
             f"{self.discovery_prefix}/sensor/navnet_ais_vessel_count/config"
@@ -343,22 +327,6 @@ class MQTTPublisher:
         }
         attributes.update(attrs)
         self.client.publish(attrs_topic, json.dumps(attributes), retain=True)
-
-    def publish_ais(self, raw_message: str):
-        """Publish raw AIS message.
-
-        Args:
-            raw_message: Raw AIS NMEA sentence.
-        """
-        if not self._connected:
-            return
-
-        topic = f"{self.topic_prefix}/ais/last_message"
-        self.client.publish(topic, raw_message, retain=False)
-
-        # Also publish to a stream topic for consumers that want all messages
-        stream_topic = f"{self.topic_prefix}/ais/stream"
-        self.client.publish(stream_topic, raw_message, retain=False)
 
     def publish_ais_vessel(self, vessel, is_new: bool):
         """Publish AIS vessel data with per-vessel HA discovery.

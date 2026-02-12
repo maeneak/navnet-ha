@@ -129,9 +129,6 @@ class NMEABridge:
 
             self._last_publish["ais"] = now
             for msg in data.ais_messages:
-                # Publish raw message
-                self.mqtt_publisher.publish_ais(msg)
-
                 # Decode and track vessel
                 result = self.ais_decoder.decode_message(msg)
                 if result is not None:
