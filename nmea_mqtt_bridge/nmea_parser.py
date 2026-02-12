@@ -176,7 +176,9 @@ def parse_sentence(raw: str) -> Optional[NMEAData]:
         logger.debug("Unexpected parse error: %s - %s", raw, e)
         return None
 
-    sentence_type = msg.sentence_type
+    # type(msg).__name__ is the sentence type (e.g. "GGA", "HDT")
+    # More reliable than msg.sentence_type which varies across pynmea2 versions.
+    sentence_type = type(msg).__name__
 
     parser = _PARSERS.get(sentence_type)
     if parser:
