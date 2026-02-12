@@ -12,7 +12,7 @@ from .udp_listener import UDPListener
 
 logger = logging.getLogger(__name__)
 
-# Maps NMEA sentence types to throttle categories
+# Maps NMEA sentence types to throttle categories (used for AIS only)
 SENTENCE_THROTTLE_MAP = {
     "GGA": "position",
     "VTG": "speed",
@@ -25,6 +25,27 @@ SENTENCE_THROTTLE_MAP = {
     "GSV": "satellites",
     "ZDA": "position",
     "AIS": "ais",
+}
+
+# Maps each sensor ID to its throttle category so sensors are
+# rate-limited independently of which NMEA sentence carries them.
+SENSOR_THROTTLE_MAP = {
+    "latitude": "position",
+    "longitude": "position",
+    "heading_true": "heading",
+    "heading_magnetic": "heading",
+    "speed_knots": "speed",
+    "speed_kmh": "speed",
+    "course_true": "speed",
+    "depth": "depth",
+    "water_temperature": "environment",
+    "altitude": "position",
+    "satellites_in_use": "satellites",
+    "hdop": "position",
+    "rudder_angle": "rudder",
+    "magnetic_variation": "heading",
+    "speed_through_water": "speed",
+    "fix_quality": "position",
 }
 
 
@@ -44,8 +65,10 @@ class NMEABridge:
             config.get("device", {}),
         )
 
-        # Throttle tracking: category -> last publish timestamp
+        # Throttle tracking: category -> last publish timestamp (AIS only)
         self._last_publish: dict[str, float] = {}
+        # Per-sensor throttle tracking: sensor_id -> last publish timestamp
+        self._last_sensor_publish: dict[str, float] = {}
         self._throttle_config = config.get("sensors", {}).get("throttle", {})
 
         # Device tracker config
@@ -95,19 +118,16 @@ class NMEABridge:
 
         self._stats["sentences_parsed"] += 1
 
-        # Check throttle
-        category = SENTENCE_THROTTLE_MAP.get(data.sentence_type, "position")
-        throttle_seconds = self._throttle_config.get(category, 5)
-        now = time.monotonic()
-        last = self._last_publish.get(category, 0)
-
-        if now - last < throttle_seconds:
-            return
-
-        self._last_publish[category] = now
-
-        # Handle AIS separately
+        # Handle AIS with sentence-level throttle
         if data.sentence_type == "AIS" and data.ais_messages:
+            throttle_seconds = self._throttle_config.get("ais", 10)
+            now = time.monotonic()
+            last = self._last_publish.get("ais", 0)
+
+            if now - last < throttle_seconds:
+                return
+
+            self._last_publish["ais"] = now
             for msg in data.ais_messages:
                 # Publish raw message
                 self.mqtt_publisher.publish_ais(msg)
@@ -141,44 +161,66 @@ class NMEABridge:
             self._stats["sentences_published"] += 1
             return
 
-        # Update state and publish sensors
+        # Non-AIS: per-sensor throttle applied inside _update_and_publish
         self._update_and_publish(data)
 
     def _update_and_publish(self, data: NMEAData):
         """Update accumulated state and publish to MQTT.
 
+        Each sensor is throttled individually based on its category,
+        so a heading value embedded in a speed sentence still respects
+        the heading throttle rate.
+
         Args:
             data: Parsed NMEA data.
         """
         published = False
+        now = time.monotonic()
 
         for sensor_id, sensor_def in SENSOR_DEFINITIONS.items():
             value_key = sensor_def["value_key"]
             value = getattr(data, value_key, None)
 
             if value is not None:
+                # Always keep state fresh for device tracker / future reads
                 self._state[value_key] = value
+
+                # Per-sensor throttle check
+                category = SENSOR_THROTTLE_MAP.get(sensor_id, "position")
+                throttle_seconds = self._throttle_config.get(category, 5)
+                last = self._last_sensor_publish.get(sensor_id, 0)
+
+                if now - last < throttle_seconds:
+                    continue
+
+                self._last_sensor_publish[sensor_id] = now
                 self.mqtt_publisher.publish_sensor(sensor_id, value)
                 published = True
 
-        # Update device tracker if position available
+        # Update device tracker on the position throttle schedule only
         if self._device_tracker_enabled:
             lat = self._state.get("latitude")
             lon = self._state.get("longitude")
 
             if lat is not None and lon is not None:
-                attrs = {}
-                heading = self._state.get("heading_true")
-                speed = self._state.get("speed_over_ground_knots")
-                hdop = self._state.get("hdop")
-                if heading is not None:
-                    attrs["heading"] = heading
-                if speed is not None:
-                    attrs["speed"] = speed
-                if hdop is not None:
-                    attrs["gps_accuracy"] = round(hdop * 5)
+                dt_throttle = self._throttle_config.get("position", 5)
+                dt_last = self._last_sensor_publish.get("_device_tracker", 0)
 
-                self.mqtt_publisher.publish_device_tracker(lat, lon, **attrs)
+                if now - dt_last >= dt_throttle:
+                    self._last_sensor_publish["_device_tracker"] = now
+
+                    attrs = {}
+                    heading = self._state.get("heading_true")
+                    speed = self._state.get("speed_over_ground_knots")
+                    hdop = self._state.get("hdop")
+                    if heading is not None:
+                        attrs["heading"] = heading
+                    if speed is not None:
+                        attrs["speed"] = speed
+                    if hdop is not None:
+                        attrs["gps_accuracy"] = round(hdop * 5)
+
+                    self.mqtt_publisher.publish_device_tracker(lat, lon, **attrs)
 
         if published:
             self._stats["sentences_published"] += 1
