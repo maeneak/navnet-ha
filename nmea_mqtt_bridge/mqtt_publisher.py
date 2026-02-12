@@ -243,20 +243,16 @@ class MQTTPublisher:
         dt_discovery_topic = (
             f"{self.discovery_prefix}/device_tracker/navnet_vessel/config"
         )
-        dt_state_topic = f"{self.topic_prefix}/device_tracker/state"
         dt_json_topic = f"{self.topic_prefix}/device_tracker/attributes"
 
         dt_payload = {
             "name": "Vessel Position",
             "unique_id": "navnet_vessel_tracker",
-            "state_topic": dt_state_topic,
             "json_attributes_topic": dt_json_topic,
             "availability_topic": availability_topic,
             "device": device,
             "icon": "mdi:ferry",
             "source_type": "gps",
-            "payload_home": "home",
-            "payload_not_home": "not_home",
         }
 
         self.client.publish(dt_discovery_topic, json.dumps(dt_payload), retain=True)
@@ -314,10 +310,7 @@ class MQTTPublisher:
         if not self._connected:
             return
 
-        state_topic = f"{self.topic_prefix}/device_tracker/state"
         attrs_topic = f"{self.topic_prefix}/device_tracker/attributes"
-
-        self.client.publish(state_topic, "not_home", retain=True)
 
         attributes = {
             "latitude": latitude,
@@ -350,10 +343,7 @@ class MQTTPublisher:
 
         # Publish device tracker state + attributes
         vessel_name = vessel.name or f"MMSI {mmsi}"
-        state_topic = f"{self.topic_prefix}/ais/vessels/{mmsi}/state"
         attrs_topic = f"{self.topic_prefix}/ais/vessels/{mmsi}/attributes"
-
-        self.client.publish(state_topic, "not_home", retain=True)
 
         attributes = {
             "latitude": vessel.latitude,
@@ -416,14 +406,11 @@ class MQTTPublisher:
         dt_payload = {
             "name": "Position",
             "unique_id": f"ais_{mmsi}_tracker",
-            "state_topic": f"{self.topic_prefix}/ais/vessels/{mmsi}/state",
             "json_attributes_topic": f"{self.topic_prefix}/ais/vessels/{mmsi}/attributes",
             "availability_topic": availability_topic,
             "device": ais_device,
             "icon": "mdi:ferry",
             "source_type": "gps",
-            "payload_home": "home",
-            "payload_not_home": "not_home",
         }
         self.client.publish(dt_disc_topic, json.dumps(dt_payload), retain=True)
 
